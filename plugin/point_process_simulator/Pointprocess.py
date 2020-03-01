@@ -6,17 +6,19 @@ import scipy.optimize as opt
 import scipy.interpolate as intpol
 from shapely.geometry import *
 from shapely.ops import unary_union,triangulate
-#from sklearn.model_selection import GridSearchCV
-#from sklearn.neighbors import KernelDensity
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KernelDensity
 import copy as copy
 
 class Pointprocess(object):
 
-    #S: list of multipoints, region: polygon, intFunc: callable
-    def __init__(self,S=[],region=None,intFunc=lambda x,y:1):
+    #S: list of multipoints, region: polygon, intFunc: callable, upper: upper bound on intensity function
+    def __init__(self,S=[],region=None,intFunc=lambda x,y:1,upper=None):
 
         self.S=S
         self.region=region
+
+        self.upper=upper
 
         if(region):
             self.minBox=region.bounds
@@ -34,7 +36,9 @@ class Pointprocess(object):
             self.minBox=()
             self.intFunc=np.vectorize(intFunc)
 
+
     def plotProcess(self,func=None,k=-1):
+        '''plots kth realization of pointprocess in S and a function func if given'''
 
         fig, ax=pyplot.subplots()
         xmin=self.minBox[0]
@@ -69,6 +73,7 @@ class Pointprocess(object):
             pyplot.show()
 
     def kernelIntensity(self, setIntensity=False):
+        '''calculates kernel intensity estimate. bandwith is calculated via likelihood-cross-validation'''
 
         if(not self.S):
             print('no points')
@@ -77,8 +82,12 @@ class Pointprocess(object):
         data=np.array([[p.x,p.y] for p in self.S[-1]])
         N=len(self.S[-1])
 
-        kde=stats.gaussian_kde(data.T)
-        f=lambda x,y: N*kde.pdf(np.array([x,y])) if self.region.contains(Point(x,y)) else -0.0001
+
+        cv=GridSearchCV(KernelDensity(),{'bandwidth': np.logspace(-3,0.5,50)},cv=int(5))
+        cv.fit(data)
+        bw=cv.best_estimator_.bandwidth
+
+        f=lambda x,y: N*np.exp(cv.best_estimator_.score_samples(np.array([[x,y]]))) if self.region.contains(Point(x,y)) else -0.0001
 
         kie=np.vectorize(f)
 
@@ -112,16 +121,20 @@ class PoissonProcess(Pointprocess):
     def simPPP(self,save=False,upper=None):
 
         if(not upper):
+            stepsizex=(self.minBox[2]-self.minBox[0])/100
+            stepsizey=(self.minBox[3]-self.minBox[1])/100
+            r=((self.minBox[0],self.minBox[2],stepsizex),(self.minBox[1],self.minBox[3],stepsizey))
+
             out=opt.brute(lambda x:-1*self.intFunc(x[0],x[1]),
-                                        ranges=((self.minBox[0],self.minBox[2],0.5),
-                                        (self.minBox[1],self.minBox[3],0.5)),
-                                        Ns=100,
+                                        ranges=r,
                                         full_output=True)
             upper=-2*out[1]
 
         homPPP=self.simHomogeneousPPP(upper)
         self.S.append(homPPP)
+
         thinPP=[p for p in homPPP if upper*np.random.ranf()<=self.intFunc(p.x,p.y)]
+
         inHomPPP=MultiPoint(thinPP)
 
         if(save):
@@ -186,8 +199,10 @@ if __name__=='__main__':
     #PP.plotProcess()
     PPP=PoissonProcess(region=Polygon([(0,0),(5,0),(5,5),(0,5)]),intFunc=lambda x,y:(5*np.sin((x-2.5)**2+(y-3)**2))**2)
     P=PPP.simPPP(save=True)
-    PPP.plotProcess(PPP.intFunc)
+    #PPP.plotProcess(PPP.intFunc)
     PPP.kernelIntensity(setIntensity=True)
+    print(PPP.upper)
+    PPP.simPPP(save=True)
     PPP.plotProcess(PPP.intFunc)
 
 
